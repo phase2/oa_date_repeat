@@ -1,0 +1,503 @@
+<?php
+
+/**
+ * @file
+ * Defines the oa_date_repeat module.
+ */
+
+/**
+ * Helper function to grab the recurring fields defined in admin settings.
+ */
+function oa_date_repeat_get_fields($node_type) {
+  $fields = field_info_instances('node', $node_type);
+  foreach ($fields as $name => $field) {
+    if ($field['widget']['module'] === 'date') {
+      $field_info = field_info_field($field['field_name']);
+      if ($field_info['settings']['repeat']) {
+        $date_fields[$name] = $name;
+      }
+    }
+  }
+
+  return isset($date_fields) ? $date_fields : NULL;
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ *
+ * Adds additional configuration settings to the form for each content type to
+ * control the behavior of the individual node recurrence creation.
+ */
+function oa_date_repeat_form_node_type_form_alter(&$form, &$form_state, $form_id) {
+  $options = oa_date_repeat_get_fields($form['#node_type']->type);
+
+  $form['oa_date_repeat'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Open Atrium Date Repeat settings'),
+    '#collapsible' => TRUE,
+    '#group' => 'additional_settings',
+  );
+
+  $form['oa_date_repeat']['oa_date_repeat_enabled'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Allow repeating dates to be rendered as unique occurrences.'),
+    '#description' => t('A repeatable date field must be added to the content type before individual nodes can be created.'),
+    '#default_value' => variable_get('oa_date_repeat_enabled_' . $form['#node_type']->type, 0),
+  );
+
+  $form['oa_date_repeat']['oa_date_repeat_enabled']['#disabled'] = isset($options) ? FALSE : TRUE;
+
+  $form['oa_date_repeat']['oa_date_repeat_field'] = array(
+    '#type' => 'select',
+    '#title' => t('Select which date field to use.'),
+    '#options' => isset($options) ? $options : array(t('No date fields')),
+    '#default_value' => variable_get('oa_date_repeat_field_' . $form['#node_type']->type, ''),
+    '#states' => array(
+      'visible' => array(
+        ':input[name="oa_date_repeat_enabled"]' => array('checked' => TRUE),
+      ),
+    ),
+  );
+
+  // Add custom submit handler for creating new reference field.
+  $form['#submit'][] = 'oa_date_repeat_form_node_type_form_submit';
+}
+
+/**
+ * Submit callback to create source NID field for enabled content types.
+ */
+function oa_date_repeat_form_node_type_form_submit($form, &$form_state) {
+  $instance = field_info_instance('node', 'field_oa_date_repeat_source_ref', $form_state['values']['type']);
+
+  if ($form_state['values']['oa_date_repeat_enabled'] == 1) {
+    if (!empty($instance)) {
+      return TRUE;
+    }
+    else {
+      // Create the instance.
+      $instance = oa_date_repeat_add_instance($form_state['values']['type']);
+
+      if (isset($instance['field_id'])) {
+        return TRUE;
+      }
+      else {
+        form_set_error('oa_date_repeat_enabled', t('Open Atrium Date Repeat settings could not be saved.'));
+        return FALSE;
+      }
+    }
+  }
+  else {
+    if (!empty($instance)) {
+      field_delete_instance($instance, FALSE);
+      return TRUE;
+    }
+  }
+
+  return TRUE;
+}
+
+/**
+ * Helper function to attach field instance to bundle.
+ *
+ * @param string $bundle
+ *   The name of the bundle to add the instance to.
+ *
+ * @return array
+ *   The instance array.
+ */
+function oa_date_repeat_add_instance($bundle) {
+  $instance = array(
+    'label' => t('Open Atrium Date Repeat Source Ref'),
+    'description' => t('The NID of the source node.'),
+    'required' => FALSE,
+    'widget' => array(
+      'type' => 'entityreference_autocomplete',
+      'module' => 'entityreference',
+      'active' => 1,
+      'settings' => array(
+        'match_operator' => 'CONTAINS',
+      ),
+    ),
+    'display' => array(
+      'default' => array(
+        'label' => 'hidden',
+        'settings' => array(),
+        'weight' => 1,
+        'type' => 'hidden',
+      ),
+      'teaser' => array(
+        'label' => 'hidden',
+        'settings' => array(),
+        'type' => 'hidden',
+      ),
+    ),
+    'default_value' => NULL,
+    'field_name' => 'field_oa_date_repeat_source_ref',
+    'entity_type' => 'node',
+    'bundle' => $bundle,
+    'deleted' => '0',
+  );
+
+  // Create the instance.
+  $instance = field_create_instance($instance);
+
+  return $instance;
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function oa_date_repeat_form_alter(&$form, &$form_state, $form_id) {
+  // Replaces default 'Save' button with modified functionality.
+  if (strstr($form_id, '_node_form') !== FALSE) {
+
+    // Should modify the node submission form only if the user is allowed to
+    // modify the authoring information and it's enabled.
+    if (!($form['author']['#access'] && variable_get('oa_date_repeat_enabled_' . $form['type']['#value'], 0))) {
+      return;
+    }
+
+    // Add ctools script files.
+    ctools_include('ajax');
+    ctools_include('modal');
+    ctools_modal_add_js();
+
+    // Hide the source reference field.
+    $form['field_oa_date_repeat_source_ref']['#access'] = FALSE;
+
+    // Disable repeat checkbox if already a repeated date.
+    $date_field = variable_get('oa_date_repeat_field_' . $form['type']['#value']);
+    if (isset($form['#node']->field_oa_date_repeat_source_ref)) {
+      $form[$date_field][LANGUAGE_NONE][0]['show_repeat_settings']['#disabled'] = TRUE;
+      $form[$date_field][LANGUAGE_NONE][0]['show_repeat_settings']['#description'] = t('Unable to repeat a currently repeated occurence.');
+    }
+
+    // Create Individual Occurrences checkbox.
+    $form[$date_field]['field_oa_date_repeat'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Create unique node occurrences'),
+      '#default_value' => 0,
+      '#states' => array(
+        'visible' => array(
+          ':input[name="' . $date_field . '[und][0][show_repeat_settings]"]' => array(
+            'checked' => TRUE,
+          ),
+        ),
+      ),
+    );
+
+    // Set the save button functionality.
+    if (!empty($form['#node']->field_oa_date_repeat_source_ref)) {
+      $form['actions']['submit'] = array(
+        '#type' => 'submit',
+        '#value' => $form['actions']['submit']['#value'],
+        '#ajax' => array(
+          'callback' => 'oa_date_repeat_edit_options',
+          'progress' => array('type' => 'none'),
+        ),
+      );
+    }
+
+    // Add our form_submit function.
+    $form['actions']['submit']['#submit'][] = 'oa_date_repeat_node_form_submit';
+  }
+}
+
+/**
+ * Submit callback redirects new recurring events to creation page.
+ */
+function oa_date_repeat_node_form_submit($form, &$form_state) {
+  $src_node = node_load($form_state['values']['nid']);
+  $date_field = variable_get('oa_date_repeat_field_' . $src_node->type);
+
+  if ($form_state['values'][$date_field]['field_oa_date_repeat']) {
+    $field_data = $form_state['values'][$date_field][LANGUAGE_NONE];
+
+    // Create new nodes for each occurrence.
+    foreach ($field_data as $key => $data) {
+      if ($key != 0) {
+        $node = clone $src_node;
+        $node->nid = NULL;
+        $node->vid = NULL;
+        $node->is_new = TRUE;
+        $data['rrule'] = NULL;
+        $node->{$date_field}[LANGUAGE_NONE] = array($data);
+        $node->field_oa_date_repeat_source_ref[LANGUAGE_NONE][0]['target_id'] = $src_node->nid;
+        node_save($node);
+      }
+    }
+    // Update source node childrens reference.
+    if (!empty($src_node->panelizer)) {
+      $src_node->panelizer = array();
+    }
+    $src_node->field_oa_date_repeat_source_ref[LANGUAGE_NONE][0]['target_id'] = $src_node->nid;
+    $src_node->{$date_field}[LANGUAGE_NONE][0]['rrule'] = NULL;
+    $src_node->{$date_field}[LANGUAGE_NONE] = array($src_node->{$date_field}[LANGUAGE_NONE][0]);
+    node_save($src_node);
+  }
+}
+
+/**
+ * Modal callback for selecting which nodes to apply changes to.
+ */
+function oa_date_repeat_edit_options($form, &$form_state) {
+  ctools_include('ajax');
+  ctools_include('modal');
+
+  // Get changes to node.
+  $old_node = clone node_load($form_state['values']['nid']);
+  $new_node = node_form_submit_build_node($form, $form_state);
+  $diffs = oa_date_repeat_get_diffs($old_node, $new_node);
+
+  if (!empty($diffs)) {
+    $date_field = variable_get('oa_date_repeat_field_' . $form_state['values']['type']);
+    $diff_vals = array();
+    foreach ($diffs as $key => $diff) {
+      $diff_vals[$key] = $form_state['values'][$key];
+
+      if ($key === $date_field) {
+        $diff_vals[$key]['value'] = $diff_vals[$key][LANGUAGE_NONE][0]['value'] - $old_node->{$date_field}[LANGUAGE_NONE][0]['value'];
+        $diff_vals[$key]['value2'] = $diff_vals[$key][LANGUAGE_NONE][0]['value2'] - $old_node->{$date_field}[LANGUAGE_NONE][0]['value2'];
+      }
+    }
+
+
+    $modal_form_state = array(
+      'title' => t('Edit recurring event'),
+      'ajax' => TRUE,
+      'source_ref' => $form_state['values']['field_oa_date_repeat_source_ref'][LANGUAGE_NONE][0]['target_id'],
+      'diffs' => $diff_vals,
+      'original_values' => $form_state['values'],
+    );
+
+    $commands = ctools_modal_form_wrapper('oa_date_repeat_edit_options_form', $modal_form_state);
+  }
+  else {
+    module_load_include('inc', 'node', 'node.pages');
+    node_form_submit($form, $form_state);
+    $commands = array();
+    $commands[] = ctools_modal_command_dismiss();
+    $commands[] = ctools_ajax_command_redirect($form_state['values']['path']['alias']);
+  }
+
+  return array(
+    '#type' => 'ajax',
+    '#commands' => $commands,
+  );
+}
+
+/**
+ * Generates the edit options form.
+ */
+function oa_date_repeat_edit_options_form($form, &$form_state) {
+  $form = array();
+
+  $form['edit_options'] = array(
+    '#type' => 'radios',
+    '#title' => t('Would you like to change only this event, all events in the series, or this and all following events in the series?'),
+    '#options' => array(
+      'individual' => t('Only this event (All other events in the series will remain the same)'),
+      'following' => t('Following events (This and all the following events will be changed. Note: This resets the series beginning with this occurence.)'),
+      'all' => t('All events (All events in the series will be changed. Note: Any changes made to other events will be kept.)'),
+    ),
+    '#required' => TRUE,
+  );
+
+  $form['actions']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Save'),
+    '#submit' => array('oa_date_repeat_edit_options_form_submit'),
+    '#ajax' => array(
+      'callback' => 'oa_date_repeat_dismiss_modal',
+    ),
+  );
+
+  $form['actions']['cancel'] = array(
+    '#type' => 'submit',
+    '#value' => t('Cancel'),
+    '#submit' => array('oa_date_repeat_edit_options_form_cancel'),
+    '#ajax' => array(
+      'callback' => 'oa_date_repeat_dismiss_modal',
+    ),
+  );
+
+  return $form;
+}
+
+/**
+ * Submit callback to apply changes to individual event nodes.
+ */
+function oa_date_repeat_edit_options_form_submit($form, &$form_state) {
+  // Update nids.
+  switch ($form_state['values']['edit_options']) {
+    case 'all':
+      // Get all nids of series.
+      $query = db_select('field_data_field_oa_date_repeat_source_ref', 'rf')
+      ->condition('rf.field_oa_date_repeat_source_ref_target_id', $form_state['source_ref'])
+      ->fields('rf', array('entity_id'));
+      $result = $query->execute();
+      $nids = $result->fetchCol('entity_id');
+      $all = TRUE;
+      break;
+
+    case 'following':
+      // Get nids following current nid.
+      $query = db_select('field_data_field_oa_date_repeat_source_ref', 'rf')
+      ->condition('rf.entity_id', $form_state['original_values']['nid'], '>=')
+      ->condition('rf.field_oa_date_repeat_source_ref_target_id', $form_state['source_ref'])
+      ->fields('rf', array('entity_id'));
+      $result = $query->execute();
+      $nids = $result->fetchCol('entity_id');
+      $following = TRUE;
+      break;
+
+    case 'individual':
+      $nids[] = $form_state['original_values']['nid'];
+      $individual = TRUE;
+      break;
+  }
+
+  // Get the date field.
+  $date_field = variable_get('oa_date_repeat_field_' . $form_state['original_values']['type'], '');
+
+  foreach ($nids as $nid) {
+    $node = node_load($nid);
+
+    // If change following events, set following nodes to new source id.
+    if ($form_state['values']['edit_options'] === 'following') {
+      $node->field_oa_date_repeat_source_ref[LANGUAGE_NONE][0]['target_id'] = $form_state['original_values']['nid'];
+    }
+
+    foreach ($form_state['diffs'] as $field_name => $diff) {
+      // Currently set so date field changes only apply to current node.
+      if ($field_name !== $date_field) {
+        $node->{$field_name} = $diff;
+      }
+      else {
+        $node->{$date_field}[LANGUAGE_NONE][0]['value'] += $diff['value'];
+        $node->{$date_field}[LANGUAGE_NONE][0]['value2'] += $diff['value2'];
+      }
+    }
+
+    // Set property.
+    if ($node->nid === $form_state['original_values']['nid']) {
+      if ($node->created === $node->revision_timestamp) {
+        $node->update_message = FALSE;
+      }
+    }
+    node_save($node);
+  }
+}
+
+/**
+ * Cancel callback for edit options form.
+ */
+function oa_date_repeat_edit_options_form_cancel($form, &$form_state) {
+  unset($form_state['diffs']);
+}
+
+/**
+ * Helper function to ajax dismiss modal.
+ */
+function oa_date_repeat_dismiss_modal($form, &$form_state) {
+  ctools_include('modal');
+  ctools_include('ajax');
+
+  $commands = array();
+  $commands[] = ctools_modal_command_dismiss();
+
+  if ($form_state['triggering_element']['#value'] === 'Cancel') {
+    drupal_get_messages();
+  }
+  else {
+    $commands[] = ctools_ajax_command_redirect($form_state['original_values']['path']['alias']);
+  }
+
+  // Reset diff values.
+  unset($form_state['diffs']);
+
+  return array(
+    '#type' => 'ajax',
+    '#commands' => $commands,
+  );
+}
+
+/**
+ * Creates an array of fields which represent the difference between nodes.
+ *
+ * @param object $old_node
+ *   Node for comparison which will be displayed on the left side.
+ * @param object $new_node
+ *   Node for comparison which will be displayed on the right side.
+ * @param string $state
+ *   The state to render for the diff.
+ */
+function oa_date_repeat_get_diffs($old_node, $new_node, $state = 'raw') {
+  module_load_include('inc', 'diff', 'diff.pages');
+  module_load_include('inc', 'diff', 'includes/node');
+
+  $context = array(
+    'entity_type' => 'node',
+    'states' => array($state),
+    'view_mode' => 'diff_standard',
+  );
+
+  $node_diffs = diff_compare_entities($old_node, $new_node, $context);
+
+  // Track line numbers between multiple diffs.
+  $line_stats = array(
+    'counter' => array('x' => 0, 'y' => 0),
+    'offset' => array('x' => 0, 'y' => 0),
+  );
+
+  // Render diffs for each.
+  foreach ($node_diffs as $key => $node_diff) {
+
+    // Line counting and line header options.
+    if (empty($node_diff['#settings']['line_counter'])) {
+      $line_counter = FALSE;
+    }
+    else {
+      $line_counter = $node_diff['#settings']['line_counter'];
+    }
+    // Every call to 'line' resets the counters.
+    if ($line_counter) {
+      $line_stats['counter']['x'] = 0;
+      $line_stats['counter']['y'] = 0;
+      if ($line_counter == 'line' && 0) {
+        $line_stats['offset']['x'] = 0;
+        $line_stats['offset']['y'] = 0;
+      }
+      $line_stats_ref = $line_stats;
+    }
+    else {
+      $line_stats_ref = NULL;
+    }
+
+    list($old, $new) = diff_extract_state($node_diff, $state);
+    if ($node_diff_rows = diff_get_rows($old, $new, $line_counter && $line_counter != 'hidden', $line_stats_ref)) {
+      $diffs[$key] = $node_diff['#name'];
+    }
+  }
+
+  return isset($diffs) ? $diffs : NULL;
+}
+
+/**
+ * Implements hook_oa_messages_type_alter().
+ */
+function oa_date_repeat_oa_messages_type_alter(&$message_type, $context) {
+  if (isset($context['entity']->field_oa_date_repeat_source_ref[LANGUAGE_NONE][0]['target_id'])) {
+    if ($message_type === 'oa_create') {
+      $message_type = NULL;
+    }
+    elseif ($message_type === 'oa_update') {
+      if ($context['entity']->field_oa_date_repeat_source_ref[LANGUAGE_NONE][0]['target_id'] !== $context['entity']->nid) {
+        $message_type = NULL;
+      }
+      elseif ($context['entity']->created >= time() - 30) {
+        $message_type = NULL;
+      }
+    }
+  }
+}

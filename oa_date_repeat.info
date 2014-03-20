@@ -1,0 +1,13 @@
+name = Open Atrium Date Repeat
+description = Create individual nodes for repeating date fields.
+package = Open Atrium
+version = 7.x-2.0
+core = 7.x
+
+; Dependencies
+dependencies[] = date_repeat_field
+dependencies[] = entityreference
+dependencies[] = diff
+
+; CSS
+stylesheets[all][] = oa_date_repeat.css

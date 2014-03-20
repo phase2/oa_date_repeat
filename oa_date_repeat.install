@@ -1,0 +1,95 @@
+<?php
+
+/**
+ * @file
+ * Installation configurations for oa_date_repeat module.
+ */
+
+/**
+ * Implements hook_install().
+ */
+function oa_date_repeat_install() {
+  field_create_field(array(
+    'translatable' => '0',
+    'entity_types' => array(),
+    'display' => array(
+      'default' => array(
+        'label' => 'hidden',
+        'settings' => array(),
+        'weight' => 1,
+        'type' => 'hidden',
+      ),
+      'teaser' => array(
+        'label' => 'hidden',
+        'settings' => array(),
+        'type' => 'hidden',
+      ),
+    ),
+    'settings' => array(
+      'target_type' => 'node',
+      'handler' => 'base',
+      'handler_settings' => array(
+        'target_bundles' => array(),
+        'sort' => array(
+          'type' => 'none',
+        ),
+        'behaviors' => array(
+          'views-select-list' => array(
+            'status' => 0,
+          ),
+        ),
+      ),
+    ),
+    'field_name' => 'field_oa_date_repeat_source_ref',
+    'type' => 'entityreference',
+    'module' => 'entityreference',
+    'active' => '1',
+    'locked' => '0',
+    'cardinality' => '1',
+    'deleted' => '0',
+    'columns' => array(
+      'target_id' => array(
+        'description' => 'The id of the target entity.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+    ),
+    'bundles' => array(),
+  ));
+
+  // Create the instance for the oa_events node type.
+  $instance = oa_date_repeat_add_instance('oa_event');
+
+  if (!isset($instance['field_id'])) {
+    drupal_set_message(t('Open Atrium Date Repeat was NOT be added to the oa_event node type.'), 'error');
+  }
+
+  variable_set('oa_date_repeat_enabled_oa_event', TRUE);
+  variable_set('oa_date_repeat_field_oa_event', 'field_oa_date');
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function oa_date_repeat_uninstall() {
+  $content_types = node_type_get_types();
+
+  foreach ($content_types as $name => $content_type) {
+
+    // Delete variable if it exists.
+    $variable = variable_get('oa_date_repeat_enabled_' . $name);
+    if (!empty($variable)) {
+      variable_del('oa_date_repeat_enabled_' . $name);
+      variable_del('oa_date_repeat_field_' . $name);
+
+      // Delete instance if it exists.
+      if ($instance = field_info_instance('node', 'field_oa_date_repeat_source_ref', $name)) {
+        field_delete_instance($instance);
+      }
+    }
+  }
+
+  // Delete the field.
+  field_delete_field('field_oa_date_repeat_source_ref');
+}

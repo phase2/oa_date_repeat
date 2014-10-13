@@ -4,6 +4,13 @@ package = Open Atrium
 version = 7.x-2.0
 core = 7.x
 
+apps[screenshots][] = app/screenshot.png
+apps[logo] = app/logo.png
+apps[author] = Phase2 Technology
+apps[author_url] = http://www.phase2technology.com/
+apps[server] = openatrium
+apps[package] = Core addons
+
 ; Dependencies
 dependencies[] = date_repeat_field
 dependencies[] = entityreference
